@@ -1,37 +1,54 @@
-ด้านล่างเป็นสคริปต์ตรวจสอบแบบครบชุดในก้อนเดียว คัดลอกไปวางใน **PowerShell ISE (Run as administrator)** แล้วกด **F5** ได้เลยครับ
+ผลรอบนี้ทำให้รู้แล้วว่า **ระบบส่วนใหญ่ปกติดี** และปัญหาแคบลงเหลือจุดเดียวครับ
 
-**สคริปต์นี้ทำอะไรบ้าง**
-- อ่านค่า PHP/IIS, extension, สิทธิ์ไฟล์, โค้ดช่วงที่น่าสงสัย และไฟล์ที่ถูกแก้ล่าสุด
-- จำลองการรันแบบ command line และ**ยิง request จริงเข้า IIS จากในเครื่อง** เพื่อจับ error ที่เกิดตอนรันด้วยสิทธิ์ของ IIS (จุดนี้คือสิ่งที่ยังขาดอยู่)
-- **ไม่แก้ php.ini และไม่แก้ไฟล์เว็บเดิม** สิ่งที่สร้างขึ้นมีแค่โฟลเดอร์ `D:\PHPLogs` กับไฟล์ทดสอบชั่วคราวหนึ่งไฟล์ ซึ่งสคริปต์จะลบให้เองตอนจบ ไฟล์ทดสอบนี้เปิดได้เฉพาะจากในเครื่อง Server และต้องใช้รหัสสุ่ม
-- ซ่อนรหัสผ่านใน `Config.php` ให้อัตโนมัติ
-- บันทึกผลทั้งหมดลง `D:\PHPLogs\diag_report.txt` แล้วเปิดใน Notepad ให้
+## สิ่งที่ยืนยันได้จากรายงาน
+
+**1. ไฟล์ PDF, ฐานข้อมูล และ file server ทำงานปกติทั้งหมด**
+ในหัวข้อ 9 ไฟล์ทดสอบที่รันผ่าน IIS แล้วเรียก `View100.php` ต่อ ได้ผลเป็น **PDF จริงขนาด 439,248 ไบต์** (`FIRST8=255044462d312e37` คือ `%PDF-1.7`) และ header ถูกต้องครบ ทั้ง `Content-type: application/pdf`, `Content-Length` และ `Cache-Control` แปลว่า
+- ฐานข้อมูลค้น FILE_ID เจอ
+- อ่านไฟล์จาก `//10.74.100.59/DOC_PD/Files/` ได้
+- การเช็กสิทธิ์ตาม IP ผ่าน
+- `SERVER_NAME` จะเป็น `personweb.kku.ac.th` หรือ `127.0.0.1` ก็ได้ผลเหมือนกัน จึงไม่ใช่ต้นเหตุ
+
+**2. แต่ถ้าเรียก `view100.php` ตรง ๆ ผ่าน IIS ยังได้ 0 ไบต์และ `text/html`**
+แปลว่าสคริปต์จบการทำงานก่อนถึงคำสั่ง `header()` ที่ส่ง PDF ปัญหาจึงอยู่ที่**ความต่างระหว่าง "เรียกตรง" กับ "เรียกผ่านไฟล์ทดสอบ"** ซึ่งมีอยู่ไม่กี่อย่าง:
+- ไฟล์ทดสอบเปิด output buffering (`ob_start`)
+- ไฟล์ทดสอบสั่ง `chdir()` ไปที่โฟลเดอร์ Manage ก่อน (`View100.php` ใช้ `require("../../System/...")` ซึ่ง PHP คิด path แบบนี้จาก current directory)
+- ชื่อไฟล์ที่ถูกเรียกต่างกัน (เว็บเรียก `view100.php` ตัวเล็ก ส่วนไฟล์จริงชื่อ `View100.php`) และเครื่องนี้เปิด **WinCache** ไว้ ซึ่งแคชไฟล์ PHP ตาม path
+- การตั้งค่า error log
+
+**3. เจอสาเหตุที่ error ไม่เคยถูกบันทึก**
+`C:\Windows\temp\PHP56_errors.log` ให้สิทธิ์ `IIS_IUSRS` แค่ `(S,RD)` คืออ่านได้อย่างเดียว app pool จึงเขียน log ไม่ได้ error ทุกอย่างบนเว็บจึงหายไปเงียบ ๆ ตั้งแต่ปี 2017
+
+**4. เรื่องเล็กน้อย**
+- ข้อความ `Get-History ... Cannot bind parameter 'Id'` เป็นความผิดพลาดของผมเอง ผมตั้งชื่อฟังก์ชันว่า `H` ซึ่งไปชนกับคำสั่งย่อของ `Get-History` ไม่กระทบผลตรวจ แค่หัวข้อไม่แสดง รอบนี้แก้แล้ว
+- ในหัวข้อ 8 ตอนรันด้วยสิทธิ์ Administrator ได้ผล `ERROR : ...` แทน PDF น่าจะเป็นเพราะบัญชี Administrator เข้า share `10.74.100.59` ไม่ได้ ซึ่งไม่เกี่ยวกับปัญหาบนเว็บ
+
+## สคริปต์รอบที่ 2: แยกทีละปัจจัยเพื่อหาตัวการ
+
+สคริปต์นี้จะ:
+- **ให้สิทธิ์ IIS เขียน error log ได้** ซึ่งเป็นการแก้ที่ควรทำอยู่แล้ว เพื่อให้เห็น error ในอนาคต
+- สร้างไฟล์ทดสอบชั่วคราว 5 ไฟล์ แต่ละไฟล์เปลี่ยนแค่ปัจจัยเดียว แล้วยิง request เทียบกัน
+- **recycle DefaultAppPool** หนึ่งครั้งเพื่อล้าง WinCache แล้วทดสอบซ้ำ เว็บทั้ง Default Web Site จะสะดุดไม่กี่วินาที
+- ลบไฟล์ทดสอบทั้งหมดตอนจบ
+
+วางใน **Script Pane (พื้นที่สีขาว)** ของ ISE แล้วกด **F5** เหมือนรอบที่แล้ว
 
 ```powershell
-# ===== KKU View100.php diagnostic =====
+# ===== KKU View100.php diagnostic #2 (bisect) =====
 $php    = "C:\Program Files (x86)\PHP\v5.6\php.exe"
-$ini    = "C:\Program Files (x86)\PHP\v5.6\php.ini"
 $site   = "D:\WEB\E-Administration\BackEnd\Program\Manage"
-$sys    = "D:\WEB\E-Administration\BackEnd\System"
-$logd   = "D:\PHPLogs"
-$report = "$logd\diag_report.txt"
+$phplog = "C:\Windows\temp\PHP56_errors.log"
+$report = "D:\PHPLogs\diag2_report.txt"
 $appcmd = "$env:windir\system32\inetsrv\appcmd.exe"
-$tok    = [guid]::NewGuid().ToString('N').Substring(0,12)
-$diag   = "$site\_diag100_$tok.php"
+$tok    = [guid]::NewGuid().ToString('N').Substring(0,10)
+$base   = "http://127.0.0.1/E-Administration/BackEnd/Program/Manage"
+$fid    = "243631"
 
-New-Item -ItemType Directory -Force $logd | Out-Null
-icacls $logd /grant "IIS_IUSRS:(OI)(CI)M" /grant "IUSR:(OI)(CI)M" /grant "IIS AppPool\DefaultAppPool:(OI)(CI)M" | Out-Null
-Remove-Item "$logd\diag100.log" -ErrorAction SilentlyContinue
-
-function Mask($t) {
-  $t = $t -replace '(?i)((pass|pwd|passwd|password|user|uid|username)\w*[''"]?\s*(=>|=|,)\s*)([''"])[^''"]*\4', '$1$4***$4'
-  $t -replace '(?i)((_connect|_pconnect|new\s+PDO|odbc_connect)\s*\()[^)]*\)', '$1***masked***)'
-}
-function H($t) { "`r`n==================== $t ====================" }
-function Req($url, $hostHdr) {
+function Section($t) { "`r`n==================== $t ====================" }
+function Req($url) {
   try {
     $r = [System.Net.HttpWebRequest]::Create($url)
-    if ($hostHdr) { $r.Host = $hostHdr }
+    $r.Host = "personweb.kku.ac.th"
     $r.AllowAutoRedirect = $false; $r.Timeout = 60000
     $resp = $r.GetResponse()
   } catch [System.Net.WebException] {
@@ -40,139 +57,96 @@ function Req($url, $hostHdr) {
   }
   $ms = New-Object IO.MemoryStream
   $resp.GetResponseStream().CopyTo($ms); $b = $ms.ToArray()
-  $first = ''; $text = ''
-  if ($b.Length -gt 0) {
-    $first = [BitConverter]::ToString($b[0..([Math]::Min(7, $b.Length - 1))])
-    $text  = [Text.Encoding]::UTF8.GetString($b, 0, [Math]::Min(300, $b.Length))
-  }
-  "STATUS=$([int]$resp.StatusCode) TYPE=$($resp.ContentType) BYTES=$($b.Length) FIRST8=$first`r`nTEXT=$text"
+  $text = ''
+  if ($b.Length -gt 0) { $text = [Text.Encoding]::UTF8.GetString($b, 0, [Math]::Min(400, $b.Length)) }
+  if ($text.StartsWith('%PDF')) { $text = '(PDF OK)' }
+  "STATUS=$([int]$resp.StatusCode) TYPE=$($resp.ContentType) BYTES=$($b.Length)`r`nTEXT=$text"
   $resp.Close()
 }
 
-& {
-H "1. PHP / IIS"
-& $php -c $ini -v 2>&1
-& $php -c $ini -i 2>&1 | Select-String -Pattern '^(error_log|log_errors|display_errors|error_reporting|extension_dir|include_path|open_basedir|disable_functions|date.timezone) ='
-& $appcmd list site
-& $appcmd list config "Default Web Site/" -section:handlers | Select-String php
-
-H "2. PHP extensions (look for 'Unable to load')"
-& $php -c $ini -m 2>&1
-
-H "3. Files, dates, permissions"
-Get-Item "$site\View100.php", "$site\view.php", "$site\ViewDocFile100.php", "$sys\Config.php" |
-  Format-Table Name, Length, LastWriteTime -AutoSize | Out-String
-icacls "$site\View100.php"
-icacls "$sys\Config.php"
-icacls "C:\Windows\temp\PHP56_errors.log"
-
-H "4. Files changed in last 90 days"
-Get-ChildItem "D:\WEB\E-Administration" -Recurse -File -Include *.php, *.ini, *.inc, web.config -ErrorAction SilentlyContinue |
-  Where-Object { $_.LastWriteTime -gt (Get-Date).AddDays(-90) } |
-  Sort-Object LastWriteTime -Descending | Select-Object -First 40 |
-  Format-Table LastWriteTime, Length, FullName -AutoSize | Out-String -Width 250
-
-H "5. View100.php lines 1-60 (masked)"
-$i = 0; Get-Content "$site\View100.php" -TotalCount 60 | ForEach-Object { $i++; "{0,4}: {1}" -f $i, (Mask $_) }
-
-H "6. Config.php lines 70-130 (masked)"
-$c = @(Get-Content "$sys\Config.php")
-for ($n = 69; $n -lt [Math]::Min(130, $c.Count); $n++) { "{0,4}: {1}" -f ($n + 1), (Mask $c[$n]) }
-
-H "7. include/require and UNC paths"
-foreach ($f in "$site\View100.php", "$sys\Config.php") {
-  "--- $f"
-  Select-String -Path $f -Pattern 'include|require|\\\\' | ForEach-Object { "{0,4}: {1}" -f $_.LineNumber, (Mask $_.Line.Trim()) }
-  Select-String -Path $f -Pattern '(include|require)(_once)?\s*\(?\s*[''"]([^''"]+)[''"]' -AllMatches |
-    ForEach-Object { $_.Matches } | ForEach-Object {
-      $p = $_.Groups[3].Value
-      "  {0}  exists(from Manage)={1}  exists(from file dir)={2}" -f $p, (Test-Path (Join-Path $site $p)), (Test-Path (Join-Path (Split-Path $f) $p))
-    }
+$files = [ordered]@{
+  "t_inc"   = "<?php include 'View100.php';"
+  "t_ob"    = "<?php ob_start(); include 'View100.php';"
+  "t_chdir" = "<?php chdir(dirname(__FILE__)); include 'View100.php';"
+  "t_env"   = @'
+<?php
+if (!in_array($_SERVER['REMOTE_ADDR'], array('127.0.0.1', '::1'))) { header('HTTP/1.1 404 Not Found'); exit; }
+header('Content-Type: text/plain');
+echo "cwd=" . getcwd() . "\n";
+echo "dir=" . dirname(__FILE__) . "\n";
+echo "SCRIPT_FILENAME=" . $_SERVER['SCRIPT_FILENAME'] . "\n";
+echo "config_exists_relative=" . var_export(file_exists('../../System/Config.php'), true) . "\n";
+echo "user=" . getenv('USERNAME') . " pool=" . getenv('APP_POOL_ID') . "\n";
+echo "wincache=" . (extension_loaded('wincache') ? 'loaded' : 'no') . " fc=" . ini_get('wincache.fcenabled') . " oc=" . ini_get('wincache.ocenabled') . "\n";
+echo "error_log=" . ini_get('error_log') . " writable=" . var_export(is_writable(ini_get('error_log')), true) . "\n";
+echo "request_order=" . ini_get('request_order') . " variables_order=" . ini_get('variables_order') . "\n";
+echo "output_buffering=" . ini_get('output_buffering') . " user_ini=" . ini_get('user_ini.filename') . "\n";
+'@
 }
 
-H "8. CLI simulation (as Administrator)"
-@'
-<?php
-error_reporting(E_ALL); ini_set('display_errors', 'stderr');
-$_SERVER['SERVER_NAME'] = 'personweb.kku.ac.th'; $_SERVER['HTTP_HOST'] = 'personweb.kku.ac.th';
-$_SERVER['REQUEST_METHOD'] = 'GET'; $_SERVER['REMOTE_ADDR'] = '127.0.0.1';
-$_GET['FILE_ID'] = $_REQUEST['FILE_ID'] = '243631';
-chdir('D:/WEB/E-Administration/BackEnd/Program/Manage');
-ob_start();
-register_shutdown_function(function () {
-  $o = ''; while (ob_get_level() > 0) { $o .= ob_get_clean(); }
-  fwrite(STDERR, "\nCLI_OUTPUT_BYTES=" . strlen($o) . " FIRST8=" . bin2hex(substr($o, 0, 8)) .
-    "\nCLI_INCLUDED=" . implode(' ; ', get_included_files()) .
-    "\nCLI_LAST_ERROR=" . print_r(error_get_last(), true) . "\n");
-});
-include 'View100.php';
-'@ | Set-Content -Encoding ASCII "$env:windir\Temp\dbg100.php"
-& $php -c $ini "$env:windir\Temp\dbg100.php" 2>&1 | Select-Object -Last 40
+& {
+Section "0. Allow IIS to write PHP error log"
+icacls $phplog /grant "IIS_IUSRS:(M)"
+$before = @(Get-Content $phplog).Count
 
-H "9. IIS simulation (real web context)"
-@'
-<?php
-$log = 'D:/PHPLogs/diag100.log';
-$ip = isset($_SERVER['REMOTE_ADDR']) ? $_SERVER['REMOTE_ADDR'] : '';
-if (!in_array($ip, array('127.0.0.1', '::1')) || !isset($_GET['k']) || $_GET['k'] !== '__TOK__') { header('HTTP/1.1 404 Not Found'); exit; }
-ini_set('log_errors', '1'); ini_set('error_log', $log); ini_set('display_errors', '0'); error_reporting(E_ALL);
-$w = @file_put_contents($log, "\n=== " . date('c') . " pool=" . getenv('APP_POOL_ID') . " SERVER_NAME=" . $_SERVER['SERVER_NAME'] .
-  " HTTP_HOST=" . $_SERVER['HTTP_HOST'] . " PHP=" . PHP_VERSION . " ini=" . php_ini_loaded_file() . "\n", FILE_APPEND);
-if ($w === false) { echo "CANNOT_WRITE_LOG"; exit; }
-$_GET['FILE_ID'] = $_REQUEST['FILE_ID'] = isset($_GET['FILE_ID']) ? $_GET['FILE_ID'] : '243631';
-chdir(dirname(__FILE__));
-ob_start();
-register_shutdown_function(function () use ($log) {
-  $o = ''; while (ob_get_level() > 0) { $o .= ob_get_clean(); }
-  file_put_contents($log, "IIS_OUTPUT_BYTES=" . strlen($o) . " FIRST8=" . bin2hex(substr($o, 0, 8)) .
-    "\nIIS_HEADERS=" . implode(' | ', headers_list()) .
-    "\nIIS_INCLUDED=" . implode(' ; ', get_included_files()) .
-    "\nIIS_LAST_ERROR=" . print_r(error_get_last(), true) . "\n", FILE_APPEND);
-  if (!headers_sent()) { header_remove(); header('Content-Type: text/plain'); }
-  echo "DIAG_DONE bytes=" . strlen($o);
-});
-include 'View100.php';
-'@.Replace('__TOK__', $tok) | Set-Content -Encoding ASCII $diag
+Section "1. Create test files"
+Copy-Item "$site\View100.php" "$site\_t_copy_$tok.php"
+foreach ($k in $files.Keys) { $files[$k] | Set-Content -Encoding ASCII "$site\_${k}_$tok.php" }
+Get-ChildItem "$site\_t_*_$tok.php" | Select-Object -ExpandProperty Name
 
-$base = "http://127.0.0.1/E-Administration/BackEnd/Program/Manage"
-"--- diag via IIS, Host=personweb.kku.ac.th"
-Req "$base/_diag100_$tok.php?k=$tok&FILE_ID=243631" "personweb.kku.ac.th"
-"--- diag via IIS, Host=localhost"
-Req "$base/_diag100_$tok.php?k=$tok&FILE_ID=243631" $null
-"--- real View100.php via IIS"
-Req "$base/view100.php?FILE_ID=243631" "personweb.kku.ac.th"
-"--- real view.php via IIS (for comparison)"
-Req "$base/view.php?FILE_ID=243631" "personweb.kku.ac.th"
-"--- diag100.log"
-if (Test-Path "$logd\diag100.log") { Get-Content "$logd\diag100.log" | ForEach-Object { Mask $_ } } else { "diag100.log NOT CREATED" }
+Section "2. Tests (before recycle)"
+"--- T1 real view100.php (lowercase, as the site uses)";  Req "$base/view100.php?FILE_ID=$fid"
+"--- T2 real View100.php (capital V)";                    Req "$base/View100.php?FILE_ID=$fid"
+"--- T3 real view100.php without FILE_ID (expect 'FILE ID IS BLANK')"; Req "$base/view100.php"
+"--- T4 exact copy of View100.php under new name";        Req "$base/_t_copy_$tok.php?FILE_ID=$fid"
+"--- T5 wrapper: include only";                           Req "$base/_t_inc_$tok.php?FILE_ID=$fid"
+"--- T6 wrapper: ob_start + include";                     Req "$base/_t_ob_$tok.php?FILE_ID=$fid"
+"--- T7 wrapper: chdir + include";                        Req "$base/_t_chdir_$tok.php?FILE_ID=$fid"
+"--- T8 environment";                                     Req "$base/_t_env_$tok.php"
 
-H "10. Event log (last 3 days)"
-Get-EventLog -LogName Application -After (Get-Date).AddDays(-3) -ErrorAction SilentlyContinue |
-  Where-Object { $_.Source -match 'FastCGI|PHP|Application Error|WAS|W3SVC|IIS' } |
-  Select-Object -First 15 | Format-List TimeGenerated, Source, EventID, Message | Out-String -Width 250
+Section "3. New PHP error log lines (before recycle)"
+Get-Content $phplog | Select-Object -Skip $before
+$before = @(Get-Content $phplog).Count
 
-H "11. Cleanup"
-Remove-Item $diag, "$env:windir\Temp\dbg100.php" -ErrorAction SilentlyContinue
-"diag file removed: $(-not (Test-Path $diag))"
+Section "4. Recycle DefaultAppPool (clears WinCache) and retest"
+& $appcmd recycle apppool /apppool.name:"DefaultAppPool"
+Start-Sleep -Seconds 5
+"--- T1 again";  Req "$base/view100.php?FILE_ID=$fid"
+"--- T3 again";  Req "$base/view100.php"
+"--- T4 again";  Req "$base/_t_copy_$tok.php?FILE_ID=$fid"
+
+Section "5. New PHP error log lines (after recycle)"
+Get-Content $phplog | Select-Object -Skip $before
+
+Section "6. web.config / .user.ini on the path"
+foreach ($d in "D:\WEB", "D:\WEB\E-Administration", "D:\WEB\E-Administration\BackEnd", "D:\WEB\E-Administration\BackEnd\Program", $site) {
+  foreach ($n in "web.config", ".user.ini") {
+    $p = Join-Path $d $n
+    if (Test-Path $p) { "--- $p"; Get-Content $p }
+  }
+}
+
+Section "7. View100.php lines 61-110"
+$v = @(Get-Content "$site\View100.php")
+for ($n = 60; $n -lt [Math]::Min(110, $v.Count); $n++) { "{0,4}: {1}" -f ($n + 1), $v[$n] }
+
+Section "8. Cleanup"
+Remove-Item "$site\_t_*_$tok.php" -ErrorAction SilentlyContinue
+"test files left: $(@(Get-ChildItem "$site\_t_*_$tok.php" -ErrorAction SilentlyContinue).Count)"
 } *>&1 | Tee-Object -FilePath $report
 
 notepad $report
 ```
 
-## วิธีใช้
+## วิธีอ่านผล (สำหรับดูคร่าว ๆ ก่อนส่งมา)
 
-1. เปิด **Windows PowerShell ISE** ด้วย **Run as administrator**
-2. ถ้าไม่เห็นช่องเขียนสคริปต์ด้านบน กด **Ctrl+R**
-3. วางสคริปต์ทั้งหมดลงในช่องด้านบน แล้วกด **F5**
-4. รอประมาณ 1–2 นาที อาจมีข้อความสีแดงบางบรรทัด ไม่ต้องตกใจ ถือเป็นส่วนหนึ่งของผลตรวจ
-5. เมื่อ Notepad เปิดขึ้นมา กด **Ctrl+A** แล้ว **Ctrl+C** จากนั้นวางกลับมาในแชทนี้ได้เลย
-   - ก่อนส่ง ให้กวาดตาดูอีกรอบว่าไม่มีรหัสผ่านหลุดมา สคริปต์ซ่อนให้แล้วแต่อาจไม่ครบทุกรูปแบบ
-   - ถ้าข้อความยาวเกินจะวาง ไฟล์อยู่ที่ `D:\PHPLogs\diag_report.txt` ส่งเป็นภาพทีละช่วงได้ โดยเน้นหัวข้อ **8, 9 และ 10**
+| ถ้าผลเป็นแบบนี้ | แปลว่า |
+|---|---|
+| T1 กลับมา `(PDF OK)` **หลัง recycle** | WinCache แคชไฟล์ผิด แก้ได้ด้วยการ recycle และปรับค่า WinCache |
+| T2 ได้ PDF แต่ T1 ได้ 0 ไบต์ | ปัญหาเรื่องตัวพิมพ์เล็ก/ใหญ่ของชื่อไฟล์ร่วมกับ WinCache |
+| T4 (สำเนา) ได้ PDF แต่ T1 ได้ 0 ไบต์ | มีบางอย่างผูกกับชื่อ/path `view100.php` โดยเฉพาะ เช่น แคช หรือ config |
+| T5 ได้ 0 แต่ T7 ได้ PDF | ปัญหาเรื่อง current directory |
+| T5 ได้ 0 แต่ T6 ได้ PDF | ปัญหาเรื่อง output buffering |
+| หัวข้อ 3 หรือ 5 มี `Fatal error` / `Warning` | ข้อความนั้นคือต้นเหตุโดยตรง |
 
-**ถ้าสคริปต์หยุดกลางทางเพราะ error** ให้ถ่ายภาพข้อความ error สีแดงช่วงแรกมา ส่วนไฟล์ทดสอบชั่วคราว ลบเองได้ด้วยคำสั่งนี้:
-
-```powershell
-Remove-Item D:\WEB\E-Administration\BackEnd\Program\Manage\_diag100_*.php
-```
-
-พอได้ผลกลับมา ผมจะบอกได้ว่าพังที่ไฟล์ไหน บรรทัดไหน และต้องแก้อย่างไรครับ
+ส่งรายงาน `diag2_report.txt` มาได้เลยครับ โดยเฉพาะหัวข้อ **2 ถึง 5** แล้วผมจะสรุปวิธีแก้ที่ตรงจุดให้
